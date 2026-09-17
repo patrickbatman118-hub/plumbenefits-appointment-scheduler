@@ -91,7 +91,13 @@ one has a one-sentence defense.
    distinct `slot_conflict` status instead of silently double-booking. *Why
    extend the spec's two-state contract:* a real scheduler has to prevent
    double-booking, and that means both duration overlap and transition time,
-   not just exact-time equality.
+   not just exact-time equality. This approach is independently corroborated,
+   not just something that happened to work: research into how booking
+   systems solve concurrent double-booking specifically names "Postgres
+   EXCLUDE USING gist... an exclusion constraint approach provides atomicity
+   by construction, where the guarantee lives in the index rather than in a
+   query" as the correct database-level solution, over both naive
+   check-then-write logic and `SELECT ... FOR UPDATE` locking.
 
    One SQLAlchemy quirk worth knowing: this constraint isn't declared as a
    `UniqueConstraint`/`ExcludeConstraint` on the `Appointment` model — the
@@ -134,7 +140,37 @@ one has a one-sentence defense.
    [Cal.com time limits](https://cal.com/blog/mastering-event-level-time-limits-what-lies-beyond-buffer-times),
    [Google Calendar Appointment Schedules](https://support.google.com/calendar/answer/10729749).
 
-6. **Confidence numbers are honestly caveated, not dressed up.** OCR and
+6. **Gemini calls are truly async, not blocking the server, and retry
+   transient failures with backoff.** Two separate findings from actually
+   inspecting the SDK and hitting a real failure mid-conversation, not from
+   reading docs alone:
+   - `google-genai`'s `client.models.generate_content` is a **synchronous,
+     blocking** call; `client.aio.models.generate_content` is the real
+     coroutine (`inspect.iscoroutinefunction` confirms this directly — True
+     for `.aio`, False for the default client). The original version of
+     this code called the sync client from inside `async def` FastAPI route
+     handlers with no `await`, which blocks the entire single-process event
+     loop for the full duration of every Gemini round-trip (often 1-5+
+     seconds) — during that window the server can't handle *any* other
+     request, not even an unrelated `GET /departments`. Fixed by switching
+     to `client.aio`. Proved the fix rather than just asserting it: fired a
+     `/schedule` request (2.5s, two Gemini calls) and, 0.3s in, a concurrent
+     `GET /departments` — the GET returned in 0.04s instead of waiting for
+     the in-flight call.
+   - Mid-testing, a real Gemini call failed with `503 UNAVAILABLE - This
+     model is currently experiencing high demand`. Google's own
+     troubleshooting guidance for 429/503 is "wait and retry with
+     exponential backoff"
+     ([source](https://ai.google.dev/gemini-api/docs/troubleshooting)).
+     `gemini_client.py`'s `_call_with_retry` now does exactly that — up to
+     4 attempts, backoff capped at 15s with jitter — but only for
+     429/503. A 400 (malformed request) or 401/403 (bad key) will fail
+     identically every time, so those raise immediately instead of wasting
+     four attempts and several seconds on a guaranteed failure.
+     `tests/test_gemini_retry.py` verifies both behaviors with the Gemini
+     client mocked out (no network needed).
+
+7. **Confidence numbers are honestly caveated, not dressed up.** OCR and
    entity-extraction confidence are self-reported by Gemini in the prompt —
    they are **not calibrated probabilities**. This is stated here explicitly
    rather than presented as a real metric. A production version would
@@ -142,7 +178,34 @@ one has a one-sentence defense.
    traditional OCR engine's word-level confidences, or self-consistency
    across repeated calls).
 
-7. **A real `dateparser` bug, worked around and documented.** `dateparser`
+8. **Idempotency keys for `/schedule` — the exact case they exist for.**
+   This endpoint can take several seconds (two sequential Gemini calls) and
+   is a real network operation a client can time out on and retry, or a
+   user can double-click "Submit" on. Without protection, a retry means a
+   second real Gemini round-trip, and since Gemini's output isn't
+   byte-for-byte deterministic across identical calls, a slightly different
+   resolved time close to another booking's buffer window could either
+   double-book a near-duplicate slot or bounce as a confusing
+   `slot_conflict` for what should be recognized as the same logical
+   request. Stripe's idempotency-key pattern
+   ([source](https://docs.stripe.com/api/idempotent_requests)) solves
+   exactly this: a client sends an optional `Idempotency-Key` header; the
+   server stores the first response under that key and replays it verbatim
+   on any retry with the same key, instead of reprocessing. Implemented in
+   `app/services/idempotency.py` + `idempotency_keys` table
+   (`0005_add_idempotency_keys.py`). Also matches Stripe's behavior for a
+   reused key with *different* parameters (a request fingerprint mismatch)
+   — that returns a `422`, not a silently-wrong replayed answer. Verified
+   live: an identical retried request returned in 0.003s instead of the
+   original 4.2s, with no duplicate row created; a same-key-different-body
+   request was correctly rejected. Deliberately scoped to only cache a
+   completed pipeline run (`ok`/`needs_clarification`/`slot_conflict`) —
+   a transient Gemini failure (502) is never cached, so retrying after a
+   real infrastructure failure actually retries instead of replaying that
+   failure forever. Known gap: keys never expire here (no cleanup job in a
+   demo), where Stripe's own retention window is 24 hours.
+
+9. **A real `dateparser` bug, worked around and documented.** `dateparser`
    1.4.3 fails to parse `"next Friday"` or `"this Friday"` as a single phrase
    (it returns `None`), even though it parses `"Friday"` alone and
    `"next week"` alone just fine — found while writing the unit tests, not in
@@ -152,7 +215,7 @@ one has a one-sentence defense.
    resolution of "next Friday"'s inherent ambiguity (nearest Friday vs. one
    week out) since it always resolves to the closest future occurrence.
 
-8. **A real Postgres 18 image-layout change, worked around and documented.**
+10. **A real Postgres 18 image-layout change, worked around and documented.**
    The official `postgres:18` Docker image restructured how it stores data on
    disk (major-version-specific subdirectories, to support `pg_ctlcluster`
    -style upgrades) and now expects the volume mounted at
@@ -162,7 +225,7 @@ one has a one-sentence defense.
    `docker compose up` and reading the failure, not by reading changelogs
    first — `docker-compose.yml`'s volume mount reflects the fix.
 
-9. **A self-audit of the pipeline found five more real bugs, verified with
+11. **A self-audit of the pipeline found five more real bugs, verified with
    actual probes, not just reasoned about:**
    - `dateparser` accepted a fully-specified *past* date/time as-is (e.g.
      "2020-01-01 3pm", or "today" once that time of day had already passed)
@@ -206,7 +269,7 @@ one has a one-sentence defense.
      rendered. All dynamic content in `static/index.html` is now passed
      through an explicit `escapeHtml()` before insertion.
 
-10. **Known scope simplifications** (deliberate, for a 3-day assignment):
+12. **Known scope simplifications** (deliberate, for a 3-day assignment):
    - One resource per department (no multiple doctors/rooms/time-of-day
      capacity) — booking a slot occupies the whole department for that
      department+date+time.
@@ -370,6 +433,25 @@ curl -X POST http://localhost:8000/api/v1/schedule -F "text=Book dentist next Fr
 # this one succeeds - exactly the 10-minute buffer past the first booking's end
 ```
 
+Retrying the same request with an idempotency key (the second call replays
+the first's result instantly instead of re-running the Gemini pipeline or
+creating a duplicate booking):
+
+```bash
+curl -X POST http://localhost:8000/api/v1/schedule \
+  -H "Idempotency-Key: demo-key-1" \
+  -F "text=Book ENT next Wednesday at 9am"
+curl -X POST http://localhost:8000/api/v1/schedule \
+  -H "Idempotency-Key: demo-key-1" \
+  -F "text=Book ENT next Wednesday at 9am"
+# second call: identical response, returns in milliseconds, no new row created
+
+curl -X POST http://localhost:8000/api/v1/schedule \
+  -H "Idempotency-Key: demo-key-1" \
+  -F "text=Book dermatology next Thursday at 2pm"
+# same key, different request body: HTTP 422
+```
+
 Booking a *different* but overlapping time (each appointment occupies a
 30-minute block, so 15:15 collides with an existing 15:00 booking even
 though the times aren't identical):
@@ -423,18 +505,21 @@ curl http://localhost:8000/api/v1/appointments
 | Department not in the canonical list (`"unclear"`) | `{"status": "needs_clarification", ...}` |
 | Entity confidence below threshold | `{"status": "needs_clarification", ...}` |
 | Date/time phrase unparsable, blank, or a placeholder word (`null`/`none`/...) | `{"status": "needs_clarification", ...}` |
-| Resolved date/time is not in the future | `{"status": "needs_clarification", ...}` (see Design Decisions #9) |
+| Resolved date/time is not in the future | `{"status": "needs_clarification", ...}` (see Design Decisions #11) |
 | Less than 60 minutes' notice, or more than 60 days in advance | `{"status": "needs_clarification", ...}` (see Design Decisions #5) |
 | Requested time is outside business hours, or its 30-minute block runs past closing | `{"status": "needs_clarification", ...}` (see Design Decisions #4) |
 | Requested date falls on a closed weekday (Sunday) | `{"status": "needs_clarification", ...}` (see Design Decisions #4) |
 | Requested time overlaps an existing booking, including its 10-minute buffer | `{"status": "slot_conflict", ...}` (extension, see Design Decisions #3) |
-| Malformed `date`/`time` string posted directly to `/appointments` or `/normalize` | `422 Unprocessable Entity` (schema validation, see Design Decisions #9) |
+| Malformed `date`/`time` string posted directly to `/appointments` or `/normalize` | `422 Unprocessable Entity` (schema validation, see Design Decisions #11) |
+| `Idempotency-Key` reused with a different request body | `422 Unprocessable Entity` (see Design Decisions #8) |
 | Gemini API error/timeout | HTTP 502 with a plain error message |
 | Oversized/non-image upload | HTTP 413 / 400 |
 
 ## Known limitations
 
-- Self-reported LLM confidence is a heuristic (see Design Decisions #6).
+- Self-reported LLM confidence is a heuristic (see Design Decisions #7).
+- Idempotency keys never expire (see Design Decisions #8) — a production
+  system would need a scheduled cleanup job.
 - Fixed 30-minute appointment duration for every department (see Design
   Decisions #3) — a real system would need per-department or per-visit-type
   durations, which would mean storing duration per row instead of baking a
