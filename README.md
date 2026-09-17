@@ -7,8 +7,9 @@ Extraction → Normalization).
 
 ## Stack
 
-Python 3.11 · FastAPI · PostgreSQL (Docker) · SQLAlchemy (async) · Alembic ·
-Google Gemini API (`gemini-2.5-pro`) · Docker Compose · minimal HTML/vanilla-JS frontend.
+Python 3.11 · FastAPI · PostgreSQL 18 (Docker) · SQLAlchemy (async) · Alembic ·
+Google Gemini API · Docker Compose · `uv` for dependency/venv management ·
+minimal HTML/vanilla-JS frontend.
 
 ## Architecture
 
@@ -89,7 +90,17 @@ one has a one-sentence defense.
    resolution of "next Friday"'s inherent ambiguity (nearest Friday vs. one
    week out) since it always resolves to the closest future occurrence.
 
-6. **Known scope simplifications** (deliberate, for a 3-day assignment):
+6. **A real Postgres 18 image-layout change, worked around and documented.**
+   The official `postgres:18` Docker image restructured how it stores data on
+   disk (major-version-specific subdirectories, to support `pg_ctlcluster`
+   -style upgrades) and now expects the volume mounted at
+   `/var/lib/postgresql`, not the pre-18 `/var/lib/postgresql/data`. Mounting
+   at the old path makes the container start but fail its healthcheck with
+   an explicit error in `docker logs`. Found by actually running
+   `docker compose up` and reading the failure, not by reading changelogs
+   first — `docker-compose.yml`'s volume mount reflects the fix.
+
+7. **Known scope simplifications** (deliberate, for a 3-day assignment):
    - One resource per department (no multiple doctors/rooms/time-of-day
      capacity) — booking a slot occupies the whole department for that
      department+date+time.
@@ -123,26 +134,39 @@ tests/                        unit tests (normalize + guardrails, no DB/network)
 
 ## Setup
 
+### Run with Docker (recommended — this is what gets demoed)
+
 1. `cp .env.example .env` and fill in `GEMINI_API_KEY` (get one from Google AI Studio).
 2. `docker compose up --build`
-   - This starts Postgres, waits for it to be healthy, then starts the API.
-   - The API container's entrypoint runs `alembic upgrade head` automatically
-     before starting the server, so the schema and seed departments are
-     always in place.
+   - This starts Postgres 18, waits for it to be healthy, then starts the API.
+   - The API image is built with `uv` (see `Dockerfile`): `uv sync --frozen`
+     installs the exact versions pinned in `uv.lock` into the image's venv,
+     then `entrypoint.sh` runs `uv run alembic upgrade head` before starting
+     `uv run uvicorn`, so the schema and seed departments are always in place.
 3. Open `http://localhost:8000` for the frontend, or use the API directly at
    `http://localhost:8000/api/v1/...`. Interactive API docs at
    `http://localhost:8000/docs`.
 
-### Running tests
+If port `5432` is already taken by a local Postgres install, change the host
+side of `db`'s port mapping in `docker-compose.yml` (e.g. `"15432:5432"`) —
+the API always talks to `db:5432` over the internal Docker network regardless
+of what's published to the host.
 
-```
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-python -m pytest
+### Local dev environment (without Docker)
+
+This project uses [`uv`](https://docs.astral.sh/uv/) for the venv and all
+dependency management — no `requirements.txt`, no manual `pip install`.
+
+```bash
+uv sync                    # creates .venv/ and installs every pinned dependency (incl. dev group)
+uv run python -m pytest    # run the test suite
+uv run uvicorn app.main:app --reload   # run the API against a Postgres you point DATABASE_URL at
 ```
 
-(Tests cover `normalize.py` and `guardrails.py` only — pure functions, no
-network or DB required, so they run without a Gemini key or Postgres.)
+(`uv run python -m pytest`, not bare `uv run pytest` — the latter doesn't add
+the project root to `sys.path`, so `import app` fails. Tests cover
+`normalize.py` and `guardrails.py` only — pure functions, no network or DB
+required, so they run without a Gemini key or Postgres.)
 
 ## API Usage
 

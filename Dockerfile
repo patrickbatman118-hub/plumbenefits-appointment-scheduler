@@ -1,13 +1,11 @@
 FROM python:3.11-slim
 
+RUN pip install --no-cache-dir uv
+
 WORKDIR /app
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends gcc libpq-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen
 
 COPY . .
 RUN chmod +x /app/entrypoint.sh
