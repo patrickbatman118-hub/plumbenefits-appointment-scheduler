@@ -115,7 +115,51 @@ one has a one-sentence defense.
    `docker compose up` and reading the failure, not by reading changelogs
    first — `docker-compose.yml`'s volume mount reflects the fix.
 
-7. **Known scope simplifications** (deliberate, for a 3-day assignment):
+7. **A self-audit of the pipeline found five real bugs, verified with actual
+   probes, not just reasoned about:**
+   - `dateparser` accepted a fully-specified *past* date/time as-is (e.g.
+     "2020-01-01 3pm", or "today" once that time of day had already passed)
+     — `PREFER_DATES_FROM="future"` only disambiguates incomplete/relative
+     phrases, it doesn't push a literal date forward. An appointment
+     scheduler booking something in the past is always wrong, so
+     `normalize.py` now explicitly rejects any resolved timestamp that
+     isn't after "now."
+   - A missing time phrase silently defaulted to midnight (`dateparser`'s
+     own behavior for a date with no time attached), which would have
+     booked a real midnight appointment instead of asking for
+     clarification. Both `date_phrase` and `time_phrase` are now required
+     to be non-blank before parsing is even attempted.
+   - Gemini doesn't reliably follow prose instructions: asked to return an
+     empty string for a missing date/time phrase, it was observed live
+     returning the literal word `"null"` instead. `normalize.py` treats a
+     small set of placeholder words (`null`, `none`, `n/a`, `unknown`, ...)
+     as blank rather than trusting the model's compliance — the same
+     "validate at the boundary" philosophy already used for the
+     department enum, applied because it was actually needed, not
+     hypothetically.
+   - Confidence values from Gemini (`OCRSchema.confidence`,
+     `entities_confidence`) had no range constraint, even though every
+     downstream guardrail is a threshold comparison against them. Both are
+     now `Field(ge=0.0, le=1.0)`, so an out-of-range value fails schema
+     validation (surfaced as a clean 502) instead of silently corrupting a
+     threshold check.
+   - `Normalized.date`/`.time` were plain `str` fields with no format
+     validation. POSTing a malformed value directly to `/appointments` or
+     `/normalize` (each step is independently callable, per the
+     assignment's own curl/Postman requirement) reached
+     `date.fromisoformat()` deep in `scheduler.py`, raised a bare
+     `ValueError`, and got mislabeled by the router as "ambiguous
+     department" — a confusing, wrong guardrail for what was actually a
+     malformed-date problem. Both fields now have Pydantic validators that
+     turn this into a proper `422` at the API boundary instead.
+   - The frontend echoed `raw_text` (whatever the user typed) back into
+     the page via `innerHTML` using `JSON.stringify`, which does not
+     HTML-escape `<`/`>`. Input like `Book dentist<img src=x
+     onerror=alert(1)>` would have executed as markup when the trace
+     rendered. All dynamic content in `static/index.html` is now passed
+     through an explicit `escapeHtml()` before insertion.
+
+8. **Known scope simplifications** (deliberate, for a 3-day assignment):
    - One resource per department (no multiple doctors/rooms/time-of-day
      capacity) — booking a slot occupies the whole department for that
      department+date+time.
@@ -289,8 +333,10 @@ curl http://localhost:8000/api/v1/appointments
 | OCR confidence below threshold | `{"status": "needs_clarification", ...}` |
 | Department not in the canonical list (`"unclear"`) | `{"status": "needs_clarification", ...}` |
 | Entity confidence below threshold | `{"status": "needs_clarification", ...}` |
-| Date/time phrase unparsable | `{"status": "needs_clarification", ...}` |
+| Date/time phrase unparsable, blank, or a placeholder word (`null`/`none`/...) | `{"status": "needs_clarification", ...}` |
+| Resolved date/time is not in the future | `{"status": "needs_clarification", ...}` (see Design Decisions #7) |
 | Requested time overlaps an existing booking for that department | `{"status": "slot_conflict", ...}` (extension, see Design Decisions #3) |
+| Malformed `date`/`time` string posted directly to `/appointments` or `/normalize` | `422 Unprocessable Entity` (schema validation, see Design Decisions #7) |
 | Gemini API error/timeout | HTTP 502 with a plain error message |
 | Oversized/non-image upload | HTTP 413 / 400 |
 

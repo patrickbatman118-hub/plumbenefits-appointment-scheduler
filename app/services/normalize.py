@@ -25,6 +25,16 @@ settings = get_settings()
 # occurrence of that weekday instead.
 _LEADING_MODIFIER = re.compile(r"^\s*(next|this|coming)\s+", re.IGNORECASE)
 
+# Gemini is prompted to return "" when a request has no date/time phrase, but
+# a prompt is a request, not a guarantee - observed it return the literal
+# string "null" for a missing time_phrase while testing this. Treated the
+# same as an empty string rather than trusted to fail parsing by luck.
+_BLANK_PHRASE_SENTINELS = {"", "null", "none", "n/a", "na", "unknown", "nil"}
+
+
+def _is_blank_phrase(phrase: str) -> bool:
+    return phrase.strip().lower() in _BLANK_PHRASE_SENTINELS
+
 
 def _try_parse(phrase: str, reference: datetime) -> datetime | None:
     return dateparser.parse(
@@ -44,6 +54,15 @@ def normalize_datetime(
     tz = ZoneInfo(settings.app_timezone)
     reference = now or datetime.now(tz)
 
+    # dateparser silently fills in gaps rather than failing: a date with no
+    # time defaults to midnight (00:00), and a bare time phrase with no date
+    # context just fails outright (inconsistent, and either way not what we
+    # want). Both directions are validated up front here instead of letting
+    # a partial phrase produce a confident-looking but made-up result -
+    # confirmed empirically, not assumed, while auditing this function.
+    if _is_blank_phrase(date_phrase) or _is_blank_phrase(time_phrase):
+        return None
+
     combined = f"{date_phrase} {time_phrase}".strip()
     parsed = _try_parse(combined, reference)
 
@@ -55,4 +74,14 @@ def normalize_datetime(
 
     if parsed is None:
         return None
+
+    # PREFER_DATES_FROM="future" only disambiguates incomplete/relative
+    # phrases (e.g. a bare weekday name) - it does NOT push a fully-specified
+    # date/time forward. "2020-01-01 3pm", or "today" when it's already past
+    # 3pm, both parse successfully as literal past timestamps. An appointment
+    # scheduler booking something in the past is always wrong, so that's
+    # rejected explicitly rather than trusted to dateparser's heuristics.
+    if parsed <= reference:
+        return None
+
     return parsed.date().isoformat(), parsed.strftime("%H:%M")

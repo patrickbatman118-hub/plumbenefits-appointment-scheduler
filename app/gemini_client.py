@@ -18,7 +18,7 @@ from typing import Literal
 
 from google import genai
 from google.genai import types
-from pydantic import BaseModel, create_model
+from pydantic import BaseModel, Field, create_model
 
 from app.config import get_settings
 
@@ -33,7 +33,12 @@ class GeminiServiceError(Exception):
 
 class OCRSchema(BaseModel):
     raw_text: str
-    confidence: float
+    # Asking for "a confidence between 0 and 1" in the prompt is only a
+    # request, not a guarantee - the schema enforces the range so an
+    # out-of-bounds value fails validation (response.parsed is then None,
+    # which _require_parsed turns into a clean 502) instead of silently
+    # flowing into a threshold comparison downstream.
+    confidence: float = Field(ge=0.0, le=1.0)
 
 
 def _require_parsed(response):
@@ -74,7 +79,7 @@ def build_entities_schema(department_choices: list[str]) -> type[BaseModel]:
         date_phrase=(str, ...),
         time_phrase=(str, ...),
         department=(department_literal, ...),
-        entities_confidence=(float, ...),
+        entities_confidence=(float, Field(ge=0.0, le=1.0)),
     )
 
 
@@ -83,8 +88,12 @@ def extract_entities(raw_text: str, department_choices: list[str]):
     prompt = (
         "You are extracting scheduling details from an appointment request.\n"
         "Extract:\n"
-        "- date_phrase: the exact phrase referring to a date (e.g. 'next Friday')\n"
-        "- time_phrase: the exact phrase referring to a time (e.g. '3pm')\n"
+        "- date_phrase: the exact phrase referring to a date (e.g. 'next Friday'). "
+        "If the request does not mention any date, return an empty string \"\" - "
+        "never a placeholder word like 'null', 'none', or 'unknown'.\n"
+        "- time_phrase: the exact phrase referring to a time (e.g. '3pm'). "
+        "If the request does not mention any time, return an empty string \"\" - "
+        "never a placeholder word like 'null', 'none', or 'unknown'.\n"
         "- department: MUST be exactly one value from the allowed list below. "
         "If nothing in the request clearly matches an allowed department, "
         "return 'unclear'. Never invent a department that is not in the list.\n"

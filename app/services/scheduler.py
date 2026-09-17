@@ -1,8 +1,10 @@
 """Orchestration + persistence for the booking step.
 
-Booking relies on a DB-level UniqueConstraint on
-(department_id, date, time) - see app/models.py - to make double-booking
-detection race-safe instead of a check-then-write race condition.
+Booking relies on a DB-level GiST EXCLUDE constraint (overlap-aware, not
+just exact-time equality) - see
+alembic/versions/0003_prevent_overlapping_appointments.py - to make
+double-booking detection race-safe instead of a check-then-write race
+condition.
 """
 
 from datetime import date as date_type
@@ -21,7 +23,13 @@ async def list_department_names(db: AsyncSession) -> list[str]:
 
 
 async def get_department_by_name(db: AsyncSession, name: str) -> Department | None:
-    result = await db.execute(select(Department).where(Department.canonical_name == name))
+    # Same is_active filter as list_department_names - a deactivated
+    # department shouldn't be bookable even if a caller (e.g. a direct
+    # /appointments request) supplies its name directly, bypassing the
+    # Gemini enum that would otherwise exclude it.
+    result = await db.execute(
+        select(Department).where(Department.canonical_name == name, Department.is_active.is_(True))
+    )
     return result.scalar_one_or_none()
 
 

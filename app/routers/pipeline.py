@@ -7,14 +7,18 @@ from app.db import get_db
 from app.gemini_client import GeminiServiceError
 from app.guardrails import ambiguous_date_time, ambiguous_department, low_confidence, slot_conflict
 from app.schemas import (
+    AppointmentRecord,
     AppointmentRequest,
     EntitiesRequest,
+    EntitiesStepResult,
     FinalOk,
     Normalized,
     NormalizedResult,
+    NormalizedStepResult,
     NormalizeRequest,
     OCRResult,
     ScheduleResponse,
+    ScheduleResult,
     ScheduleTrace,
 )
 from app.services import entities as entities_service
@@ -56,7 +60,7 @@ async def ocr_endpoint(text: str | None = Form(None), image: UploadFile | None =
     return await _run_ocr(text, image)
 
 
-@router.post("/entities")
+@router.post("/entities", response_model=EntitiesStepResult)
 async def entities_endpoint(payload: EntitiesRequest, db: AsyncSession = Depends(get_db)):
     departments = await scheduler_service.list_department_names(db)
     result = _extract_entities(payload.raw_text, departments)
@@ -67,7 +71,7 @@ async def entities_endpoint(payload: EntitiesRequest, db: AsyncSession = Depends
     return result
 
 
-@router.post("/normalize")
+@router.post("/normalize", response_model=NormalizedStepResult)
 async def normalize_endpoint(payload: NormalizeRequest):
     resolved = normalize_service.normalize_datetime(payload.entities.date_phrase, payload.entities.time_phrase)
     if resolved is None:
@@ -77,7 +81,7 @@ async def normalize_endpoint(payload: NormalizeRequest):
     return NormalizedResult(normalized=normalized, normalization_confidence=0.9)
 
 
-@router.post("/appointments")
+@router.post("/appointments", response_model=ScheduleResult)
 async def appointments_endpoint(payload: AppointmentRequest, db: AsyncSession = Depends(get_db)):
     try:
         appointment = await scheduler_service.book_appointment(db, payload.entities, payload.normalized, raw_text="")
@@ -90,7 +94,7 @@ async def appointments_endpoint(payload: AppointmentRequest, db: AsyncSession = 
     return FinalOk(appointment=appointment)
 
 
-@router.get("/appointments")
+@router.get("/appointments", response_model=list[AppointmentRecord])
 async def list_appointments(db: AsyncSession = Depends(get_db)):
     return await scheduler_service.list_appointments(db)
 

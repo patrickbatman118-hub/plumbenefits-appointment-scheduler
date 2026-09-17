@@ -52,20 +52,31 @@
     const output = document.getElementById('output');
     const tbody = document.querySelector('#appointmentsTable tbody');
 
+    // raw_text in the trace is whatever the user typed - it comes back from
+    // the API verbatim and must never be inserted as HTML. JSON.stringify
+    // does not escape "<"/">", so without this, input like
+    // 'Book dentist<img src=x onerror=alert(1)>' would execute as markup
+    // when the trace is rendered.
+    function escapeHtml(str) {
+      return str.replace(/[&<>"']/g, (c) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+      }[c]));
+    }
+
     async function refreshAppointments() {
       const res = await fetch('/api/v1/appointments');
       const rows = await res.json();
       tbody.innerHTML = '';
       for (const row of rows) {
         const tr = document.createElement('tr');
-        tr.innerHTML = `<td>${row.department}</td><td>${row.date}</td><td>${row.time}</td><td>${row.tz}</td><td>${row.status}</td>`;
+        tr.innerHTML = `<td>${escapeHtml(row.department)}</td><td>${escapeHtml(row.date)}</td><td>${escapeHtml(row.time)}</td><td>${escapeHtml(row.tz)}</td><td>${escapeHtml(row.status)}</td>`;
         tbody.appendChild(tr);
       }
     }
 
     function renderStage(title, obj) {
       if (!obj) return '';
-      return `<div class="stage"><h3>${title}</h3><pre>${JSON.stringify(obj, null, 2)}</pre></div>`;
+      return `<div class="stage"><h3>${title}</h3><pre>${escapeHtml(JSON.stringify(obj, null, 2))}</pre></div>`;
     }
 
     form.addEventListener('submit', async (e) => {
@@ -88,7 +99,7 @@
         const res = await fetch('/api/v1/schedule', { method: 'POST', body });
         const data = await res.json();
         if (!res.ok) {
-          output.innerHTML = `<pre>${JSON.stringify(data, null, 2)}</pre>`;
+          output.innerHTML = `<pre>${escapeHtml(JSON.stringify(data, null, 2))}</pre>`;
           return;
         }
         const trace = data.trace || {};
@@ -98,10 +109,10 @@
           renderStage('Step 1 · OCR / Text Extraction', trace.ocr) +
           renderStage('Step 2 · Entity Extraction', trace.entities) +
           renderStage('Step 3 · Normalization', trace.normalized) +
-          `<div class="stage"><h3>Step 4 · Final Result (<span class="${statusClass}">${result.status}</span>)</h3><pre>${JSON.stringify(result, null, 2)}</pre></div>`;
+          `<div class="stage"><h3>Step 4 · Final Result (<span class="${statusClass}">${escapeHtml(String(result.status))}</span>)</h3><pre>${escapeHtml(JSON.stringify(result, null, 2))}</pre></div>`;
         await refreshAppointments();
       } catch (err) {
-        output.innerHTML = `<p>Request failed: ${err}</p>`;
+        output.innerHTML = `<p>Request failed: ${escapeHtml(String(err))}</p>`;
       }
     });
 
