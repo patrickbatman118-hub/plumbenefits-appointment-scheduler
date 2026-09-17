@@ -7,9 +7,6 @@ on top of the spec (see README "Design Decisions" #3).
 
 from app.schemas import ConflictResponse, GuardrailResponse
 
-NEEDS_CLARIFICATION = "needs_clarification"
-SLOT_CONFLICT = "slot_conflict"
-
 
 def ambiguous_department() -> GuardrailResponse:
     return GuardrailResponse(message="Ambiguous or unrecognized department")

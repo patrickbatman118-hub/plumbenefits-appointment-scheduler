@@ -23,13 +23,15 @@ class Appointment(Base):
     """No overlap constraint is declared here on purpose.
 
     Two bookings for the same department must not have overlapping
-    [time, time + APPOINTMENT_DURATION_MINUTES) ranges - not just avoid an
-    exact-time match. That can't be expressed as a plain SQLAlchemy
-    UniqueConstraint, so it's enforced as a Postgres GiST EXCLUDE constraint
-    defined directly in alembic/versions/0003_prevent_overlapping_appointments.py.
-    This project manages its schema entirely through Alembic migrations
-    (nothing calls Base.metadata.create_all()), so that migration - not this
-    class - is the actual source of truth for the constraint.
+    [time, time + APPOINTMENT_DURATION_MINUTES + APPOINTMENT_BUFFER_MINUTES)
+    ranges - not just avoid an exact-time match. That can't be expressed as
+    a plain SQLAlchemy UniqueConstraint, so it's enforced as a Postgres GiST
+    EXCLUDE constraint defined directly in
+    alembic/versions/0003_prevent_overlapping_appointments.py (extended by
+    0004_add_appointment_buffer.py). This project manages its schema
+    entirely through Alembic migrations (nothing calls
+    Base.metadata.create_all()), so those migrations - not this class - are
+    the actual source of truth for the constraint.
     """
 
     __tablename__ = "appointments"
@@ -57,6 +59,10 @@ class IdempotencyKey(Base):
 
     key: Mapped[str] = mapped_column(String(255), primary_key=True)
     request_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Always 200 currently - only a completed pipeline run ever gets cached
+    # (see idempotency.py), and /schedule always returns 200 for those.
+    # Stored anyway, matching what Stripe itself caches, in case a future
+    # idempotent endpoint needs to replay a different status code.
     response_status: Mapped[int] = mapped_column(Integer, nullable=False)
     response_body: Mapped[dict] = mapped_column(JSONB, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

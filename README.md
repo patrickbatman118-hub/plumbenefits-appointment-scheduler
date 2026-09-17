@@ -26,13 +26,14 @@ minimal HTML/vanilla-JS frontend.
                                         │
                                         ▼
                           Step 3: Normalization ──► ISO date, time, tz
-                          (deterministic: dateparser +
-                           zoneinfo — NOT the LLM)
-                                        │
+                          (deterministic: dateparser +   validated against:
+                           zoneinfo — NOT the LLM)        past/notice/horizon,
+                                        │                 business hours, closed days
                                         ▼
                           Step 4: Book Appointment ──► persisted row
-                          (Postgres, UNIQUE constraint on
-                           department+date+time)
+                          (Postgres GiST EXCLUDE constraint:
+                           overlap- and buffer-aware, not just
+                           department+date+time equality)
                                         │
                                         ▼
                               final JSON: ok / needs_clarification / slot_conflict
@@ -40,7 +41,11 @@ minimal HTML/vanilla-JS frontend.
 
 Every stage is both an individual endpoint (matching the spec's JSON contracts
 exactly) and part of one composed `/api/v1/schedule` call that chains all four
-and returns the full trace — see "API Usage" below.
+and returns the full trace — see "API Usage" below. The Gemini calls in steps
+1 and 2 are async (don't block the server) and retry transient failures with
+backoff; `/schedule` also accepts an optional `Idempotency-Key` header so a
+retried request replays the original result instead of re-running the
+pipeline — see Design Decisions #6 and #8.
 
 ## Design Decisions (read this before the interview)
 
@@ -285,21 +290,25 @@ app/
   main.py               FastAPI app + static frontend mount
   config.py              Settings (.env via pydantic-settings)
   db.py                   Async SQLAlchemy engine/session
-  models.py               Department, Appointment (+ unique slot constraint)
+  constants.py             Scheduling constants shared by app + migrations (cited sources)
+  models.py                Department, Appointment, IdempotencyKey
   schemas.py               Pydantic request/response models (spec-exact JSON shapes)
-  gemini_client.py         Gemini SDK wrapper (OCR call, entity-extraction call)
+  gemini_client.py         Async Gemini SDK wrapper (OCR + entity extraction, retry w/ backoff)
   guardrails.py             needs_clarification / slot_conflict response builders
   services/
     ocr.py                  text passthrough vs image OCR
     entities.py              entity extraction
     normalize.py             deterministic date/time resolution (pure function)
     scheduler.py              department lookup, conflict-checked persistence
+    idempotency.py            Idempotency-Key lookup/store for /schedule
   routers/
     pipeline.py               /ocr /entities /normalize /appointments /schedule
     departments.py             /departments
-alembic/                     migrations (schema + seed data)
+alembic/                     5 migrations: schema, seed data, overlap constraint,
+                              buffer, idempotency_keys table
 static/index.html             minimal frontend
-tests/                        unit tests (normalize + guardrails, no DB/network)
+tests/                        unit tests: normalize, guardrails, Gemini retry policy,
+                              idempotency fingerprinting - no DB/network required
 ```
 
 ## Setup

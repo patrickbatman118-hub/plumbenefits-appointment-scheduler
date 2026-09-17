@@ -1,10 +1,10 @@
 """Orchestration + persistence for the booking step.
 
 Booking relies on a DB-level GiST EXCLUDE constraint (overlap-aware, not
-just exact-time equality) - see
-alembic/versions/0003_prevent_overlapping_appointments.py - to make
-double-booking detection race-safe instead of a check-then-write race
-condition.
+just exact-time equality, and including a transition buffer) - see
+alembic/versions/0003_prevent_overlapping_appointments.py and
+0004_add_appointment_buffer.py - to make double-booking detection race-safe
+instead of a check-then-write race condition.
 """
 
 from datetime import date as date_type

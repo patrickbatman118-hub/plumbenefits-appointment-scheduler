@@ -5,10 +5,6 @@ from typing import Annotated, Literal, Optional, Union
 from pydantic import BaseModel, Field, field_validator
 
 
-class TextInput(BaseModel):
-    text: str
-
-
 class OCRResult(BaseModel):
     raw_text: str
     confidence: float = Field(ge=0.0, le=1.0)
