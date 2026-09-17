@@ -12,6 +12,6 @@ def ocr_text(text: str) -> OCRResult:
     return OCRResult(raw_text=text.strip(), confidence=1.0)
 
 
-def ocr_from_image(image_bytes: bytes, mime_type: str) -> OCRResult:
-    result = ocr_image(image_bytes, mime_type)
+async def ocr_from_image(image_bytes: bytes, mime_type: str) -> OCRResult:
+    result = await ocr_image(image_bytes, mime_type)
     return OCRResult(raw_text=result.raw_text, confidence=result.confidence)

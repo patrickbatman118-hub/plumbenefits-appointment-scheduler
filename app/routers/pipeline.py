@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, UploadFile
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,6 +23,7 @@ from app.schemas import (
     ScheduleTrace,
 )
 from app.services import entities as entities_service
+from app.services import idempotency as idempotency_service
 from app.services import normalize as normalize_service
 from app.services import ocr as ocr_service
 from app.services import scheduler as scheduler_service
@@ -41,7 +42,7 @@ async def _run_ocr(text: str | None, image: UploadFile | None) -> OCRResult:
         if not (image.content_type or "").startswith("image/"):
             raise HTTPException(status_code=400, detail="Uploaded file must be an image")
         try:
-            return ocr_service.ocr_from_image(content, image.content_type)
+            return await ocr_service.ocr_from_image(content, image.content_type)
         except GeminiServiceError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
     if text is not None and text.strip():
@@ -49,9 +50,9 @@ async def _run_ocr(text: str | None, image: UploadFile | None) -> OCRResult:
     raise HTTPException(status_code=400, detail="Provide either 'text' or 'image'")
 
 
-def _extract_entities(raw_text: str, departments: list[str]):
+async def _extract_entities(raw_text: str, departments: list[str]):
     try:
-        return entities_service.extract(raw_text, departments)
+        return await entities_service.extract(raw_text, departments)
     except GeminiServiceError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -64,7 +65,7 @@ async def ocr_endpoint(text: str | None = Form(None), image: UploadFile | None =
 @router.post("/entities", response_model=EntitiesStepResult)
 async def entities_endpoint(payload: EntitiesRequest, db: AsyncSession = Depends(get_db)):
     departments = await scheduler_service.list_department_names(db)
-    result = _extract_entities(payload.raw_text, departments)
+    result = await _extract_entities(payload.raw_text, departments)
     if result.entities.department == "unclear":
         return ambiguous_department()
     if result.entities_confidence < settings.entity_confidence_threshold:
@@ -107,6 +108,40 @@ async def schedule_endpoint(
     text: str | None = Form(None),
     image: UploadFile | None = File(None),
     db: AsyncSession = Depends(get_db),
+    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
+) -> ScheduleResponse:
+    """Idempotency-Key is optional and fully backward compatible - omit it
+    and behavior is unchanged. Provide it and a retried request with the
+    same key replays the original result instead of re-running the Gemini
+    pipeline and potentially double-booking - see
+    app/services/idempotency.py for why this matters specifically for an
+    endpoint like this one."""
+    req_fingerprint = None
+    if idempotency_key:
+        image_bytes = await image.read() if image is not None else None
+        if image is not None:
+            await image.seek(0)  # rewind so _run_ocr can read it again below
+        req_fingerprint = idempotency_service.fingerprint(text, image_bytes)
+
+        existing = await idempotency_service.get(db, idempotency_key)
+        if existing is not None:
+            if existing.request_fingerprint != req_fingerprint:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Idempotency-Key was already used with a different request",
+                )
+            return ScheduleResponse.model_validate(existing.response_body)
+
+    response = await _run_schedule_pipeline(text, image, db)
+
+    if idempotency_key:
+        await idempotency_service.store(db, idempotency_key, req_fingerprint, response.model_dump(mode="json"))
+
+    return response
+
+
+async def _run_schedule_pipeline(
+    text: str | None, image: UploadFile | None, db: AsyncSession
 ) -> ScheduleResponse:
     trace = ScheduleTrace()
 
@@ -119,7 +154,7 @@ async def schedule_endpoint(
         )
 
     departments = await scheduler_service.list_department_names(db)
-    entities_result = _extract_entities(ocr_result.raw_text, departments)
+    entities_result = await _extract_entities(ocr_result.raw_text, departments)
     trace.entities = entities_result
     if entities_result.entities.department == "unclear":
         return ScheduleResponse(trace=trace, result=ambiguous_department())
