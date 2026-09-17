@@ -15,8 +15,8 @@ def ambiguous_department() -> GuardrailResponse:
     return GuardrailResponse(message="Ambiguous or unrecognized department")
 
 
-def ambiguous_date_time() -> GuardrailResponse:
-    return GuardrailResponse(message="Ambiguous date/time or department")
+def ambiguous_date_time(reason: str = "Ambiguous date/time or department") -> GuardrailResponse:
+    return GuardrailResponse(message=reason)
 
 
 def low_confidence(stage: str, confidence: float, threshold: float) -> GuardrailResponse:

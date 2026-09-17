@@ -87,7 +87,23 @@ one has a one-sentence defense.
    model's docstring explains why (the migration is the only source of
    truth, since this project never calls `Base.metadata.create_all()`).
 
-4. **Confidence numbers are honestly caveated, not dressed up.** OCR and
+4. **Business hours and closed days are enforced — a clinic is not open
+   24/7.** This should have been in the design from the start, not added
+   after the fact: `app/constants.py` defines `BUSINESS_START_HOUR = 9`,
+   `BUSINESS_END_HOUR = 18`, and `CLOSED_WEEKDAYS = {Sunday}`, applied
+   identically to every department (documented simplification — a real
+   system would likely need per-department hours). `normalize.py` rejects
+   any request that resolves to a time outside `09:00–18:00`, a Sunday, or
+   an appointment whose 30-minute block would run past closing (e.g.
+   17:45 is "during hours" but 17:45–18:15 isn't, so it's rejected too;
+   the last bookable slot is 17:30). These constants are intentionally
+   shared with the booking-conflict migration (`app/constants.py` is
+   imported by both `normalize.py` and
+   `alembic/versions/0003_prevent_overlapping_appointments.py`) so the
+   appointment duration can't silently drift out of sync between the two
+   places that need to agree on it.
+
+5. **Confidence numbers are honestly caveated, not dressed up.** OCR and
    entity-extraction confidence are self-reported by Gemini in the prompt —
    they are **not calibrated probabilities**. This is stated here explicitly
    rather than presented as a real metric. A production version would
@@ -95,7 +111,7 @@ one has a one-sentence defense.
    traditional OCR engine's word-level confidences, or self-consistency
    across repeated calls).
 
-5. **A real `dateparser` bug, worked around and documented.** `dateparser`
+6. **A real `dateparser` bug, worked around and documented.** `dateparser`
    1.4.3 fails to parse `"next Friday"` or `"this Friday"` as a single phrase
    (it returns `None`), even though it parses `"Friday"` alone and
    `"next week"` alone just fine — found while writing the unit tests, not in
@@ -105,7 +121,7 @@ one has a one-sentence defense.
    resolution of "next Friday"'s inherent ambiguity (nearest Friday vs. one
    week out) since it always resolves to the closest future occurrence.
 
-6. **A real Postgres 18 image-layout change, worked around and documented.**
+7. **A real Postgres 18 image-layout change, worked around and documented.**
    The official `postgres:18` Docker image restructured how it stores data on
    disk (major-version-specific subdirectories, to support `pg_ctlcluster`
    -style upgrades) and now expects the volume mounted at
@@ -115,8 +131,8 @@ one has a one-sentence defense.
    `docker compose up` and reading the failure, not by reading changelogs
    first — `docker-compose.yml`'s volume mount reflects the fix.
 
-7. **A self-audit of the pipeline found five real bugs, verified with actual
-   probes, not just reasoned about:**
+8. **A self-audit of the pipeline found five more real bugs, verified with
+   actual probes, not just reasoned about:**
    - `dateparser` accepted a fully-specified *past* date/time as-is (e.g.
      "2020-01-01 3pm", or "today" once that time of day had already passed)
      — `PREFER_DATES_FROM="future"` only disambiguates incomplete/relative
@@ -159,10 +175,11 @@ one has a one-sentence defense.
      rendered. All dynamic content in `static/index.html` is now passed
      through an explicit `escapeHtml()` before insertion.
 
-8. **Known scope simplifications** (deliberate, for a 3-day assignment):
+9. **Known scope simplifications** (deliberate, for a 3-day assignment):
    - One resource per department (no multiple doctors/rooms/time-of-day
      capacity) — booking a slot occupies the whole department for that
      department+date+time.
+   - Business hours and closed days are global, not per-department.
    - Department matching is a fixed, seeded list (`alembic/versions/0002_seed_departments.py`),
      not a self-service admin CRUD.
    - No auth — single-tenant demo, as implied by the spec.
@@ -273,6 +290,20 @@ curl -X POST http://localhost:8000/api/v1/schedule -F "text=Book dentist wheneve
 # result.status == "needs_clarification"
 ```
 
+Outside business hours (nobody is taking a 2am dentist appointment):
+
+```bash
+curl -X POST http://localhost:8000/api/v1/schedule -F "text=Book dentist tomorrow at 2am"
+# result.status == "needs_clarification", message mentions "business hours"
+```
+
+Closed day:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/schedule -F "text=Book dentist this Sunday at 11am"
+# result.status == "needs_clarification", message mentions "closed"
+```
+
 Double-booking the exact same slot:
 
 ```bash
@@ -334,15 +365,17 @@ curl http://localhost:8000/api/v1/appointments
 | Department not in the canonical list (`"unclear"`) | `{"status": "needs_clarification", ...}` |
 | Entity confidence below threshold | `{"status": "needs_clarification", ...}` |
 | Date/time phrase unparsable, blank, or a placeholder word (`null`/`none`/...) | `{"status": "needs_clarification", ...}` |
-| Resolved date/time is not in the future | `{"status": "needs_clarification", ...}` (see Design Decisions #7) |
+| Resolved date/time is not in the future | `{"status": "needs_clarification", ...}` (see Design Decisions #8) |
+| Requested time is outside business hours, or its 30-minute block runs past closing | `{"status": "needs_clarification", ...}` (see Design Decisions #4) |
+| Requested date falls on a closed weekday (Sunday) | `{"status": "needs_clarification", ...}` (see Design Decisions #4) |
 | Requested time overlaps an existing booking for that department | `{"status": "slot_conflict", ...}` (extension, see Design Decisions #3) |
-| Malformed `date`/`time` string posted directly to `/appointments` or `/normalize` | `422 Unprocessable Entity` (schema validation, see Design Decisions #7) |
+| Malformed `date`/`time` string posted directly to `/appointments` or `/normalize` | `422 Unprocessable Entity` (schema validation, see Design Decisions #8) |
 | Gemini API error/timeout | HTTP 502 with a plain error message |
 | Oversized/non-image upload | HTTP 413 / 400 |
 
 ## Known limitations
 
-- Self-reported LLM confidence is a heuristic (see Design Decisions #4).
+- Self-reported LLM confidence is a heuristic (see Design Decisions #5).
 - Fixed 30-minute appointment duration for every department (see Design
   Decisions #3) — a real system would need per-department or per-visit-type
   durations, which would mean storing duration per row instead of baking a

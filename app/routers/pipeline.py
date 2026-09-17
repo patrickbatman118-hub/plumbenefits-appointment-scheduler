@@ -6,6 +6,7 @@ from app.config import get_settings
 from app.db import get_db
 from app.gemini_client import GeminiServiceError
 from app.guardrails import ambiguous_date_time, ambiguous_department, low_confidence, slot_conflict
+from app.services.normalize import DateTimeRejected
 from app.schemas import (
     AppointmentRecord,
     AppointmentRequest,
@@ -73,10 +74,12 @@ async def entities_endpoint(payload: EntitiesRequest, db: AsyncSession = Depends
 
 @router.post("/normalize", response_model=NormalizedStepResult)
 async def normalize_endpoint(payload: NormalizeRequest):
-    resolved = normalize_service.normalize_datetime(payload.entities.date_phrase, payload.entities.time_phrase)
-    if resolved is None:
-        return ambiguous_date_time()
-    date_str, time_str = resolved
+    try:
+        date_str, time_str = normalize_service.normalize_datetime(
+            payload.entities.date_phrase, payload.entities.time_phrase
+        )
+    except DateTimeRejected as exc:
+        return ambiguous_date_time(str(exc))
     normalized = Normalized(date=date_str, time=time_str, tz=settings.app_timezone)
     return NormalizedResult(normalized=normalized, normalization_confidence=0.9)
 
@@ -128,12 +131,12 @@ async def schedule_endpoint(
             ),
         )
 
-    resolved = normalize_service.normalize_datetime(
-        entities_result.entities.date_phrase, entities_result.entities.time_phrase
-    )
-    if resolved is None:
-        return ScheduleResponse(trace=trace, result=ambiguous_date_time())
-    date_str, time_str = resolved
+    try:
+        date_str, time_str = normalize_service.normalize_datetime(
+            entities_result.entities.date_phrase, entities_result.entities.time_phrase
+        )
+    except DateTimeRejected as exc:
+        return ScheduleResponse(trace=trace, result=ambiguous_date_time(str(exc)))
     normalized = Normalized(date=date_str, time=time_str, tz=settings.app_timezone)
     trace.normalized = NormalizedResult(normalized=normalized, normalization_confidence=0.9)
 

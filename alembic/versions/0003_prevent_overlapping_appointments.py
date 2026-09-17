@@ -8,17 +8,12 @@ Create Date: 2026-09-17
 
 from alembic import op
 
+from app.constants import APPOINTMENT_DURATION_MINUTES
+
 revision = "0003"
 down_revision = "0002"
 branch_labels = None
 depends_on = None
-
-# Every appointment is assumed to occupy this many minutes. The spec doesn't
-# define an appointment duration, so this is a documented simplifying
-# assumption (see README "Design Decisions"). It's baked into the DB
-# constraint expression below, not read from app config at request time -
-# changing it requires a new migration.
-APPOINTMENT_DURATION_MINUTES = 30
 
 
 def upgrade() -> None:

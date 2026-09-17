@@ -8,12 +8,13 @@ see tests/test_normalize.py.
 """
 
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import dateparser
 
 from app.config import get_settings
+from app.constants import APPOINTMENT_DURATION_MINUTES, BUSINESS_END_HOUR, BUSINESS_START_HOUR, CLOSED_WEEKDAYS
 
 settings = get_settings()
 
@@ -32,6 +33,12 @@ _LEADING_MODIFIER = re.compile(r"^\s*(next|this|coming)\s+", re.IGNORECASE)
 _BLANK_PHRASE_SENTINELS = {"", "null", "none", "n/a", "na", "unknown", "nil"}
 
 
+class DateTimeRejected(Exception):
+    """Raised with a human-readable reason whenever a date/time can't be
+    accepted for booking - unparsable, in the past, or outside business
+    hours. The router surfaces str(exc) directly as the guardrail message."""
+
+
 def _is_blank_phrase(phrase: str) -> bool:
     return phrase.strip().lower() in _BLANK_PHRASE_SENTINELS
 
@@ -48,9 +55,8 @@ def _try_parse(phrase: str, reference: datetime) -> datetime | None:
     )
 
 
-def normalize_datetime(
-    date_phrase: str, time_phrase: str, now: datetime | None = None
-) -> tuple[str, str] | None:
+def normalize_datetime(date_phrase: str, time_phrase: str, now: datetime | None = None) -> tuple[str, str]:
+    """Returns (date, time) as ISO strings, or raises DateTimeRejected."""
     tz = ZoneInfo(settings.app_timezone)
     reference = now or datetime.now(tz)
 
@@ -61,7 +67,7 @@ def normalize_datetime(
     # a partial phrase produce a confident-looking but made-up result -
     # confirmed empirically, not assumed, while auditing this function.
     if _is_blank_phrase(date_phrase) or _is_blank_phrase(time_phrase):
-        return None
+        raise DateTimeRejected("No date or time was mentioned in the request")
 
     combined = f"{date_phrase} {time_phrase}".strip()
     parsed = _try_parse(combined, reference)
@@ -73,7 +79,7 @@ def normalize_datetime(
             parsed = _try_parse(fallback, reference)
 
     if parsed is None:
-        return None
+        raise DateTimeRejected(f"Could not understand the date/time phrase \"{combined}\"")
 
     # PREFER_DATES_FROM="future" only disambiguates incomplete/relative
     # phrases (e.g. a bare weekday name) - it does NOT push a fully-specified
@@ -82,6 +88,21 @@ def normalize_datetime(
     # scheduler booking something in the past is always wrong, so that's
     # rejected explicitly rather than trusted to dateparser's heuristics.
     if parsed <= reference:
-        return None
+        raise DateTimeRejected("That date/time has already passed")
+
+    # No clinic is open 24/7. Applied identically to every department - see
+    # app/constants.py for why this is a global assumption, not per-department
+    # config, and the README's "Known scope simplifications".
+    if parsed.weekday() in CLOSED_WEEKDAYS:
+        raise DateTimeRejected(f"We're closed on {parsed.strftime('%A')}s")
+
+    business_start = parsed.replace(hour=BUSINESS_START_HOUR, minute=0, second=0, microsecond=0)
+    business_end = parsed.replace(hour=BUSINESS_END_HOUR, minute=0, second=0, microsecond=0)
+    appointment_end = parsed + timedelta(minutes=APPOINTMENT_DURATION_MINUTES)
+    if parsed < business_start or appointment_end > business_end:
+        raise DateTimeRejected(
+            f"Requested time is outside business hours "
+            f"({BUSINESS_START_HOUR:02d}:00-{BUSINESS_END_HOUR:02d}:00)"
+        )
 
     return parsed.date().isoformat(), parsed.strftime("%H:%M")
