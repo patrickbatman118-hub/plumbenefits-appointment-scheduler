@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.env
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+postgres_data/
+.DS_Store
+
+# Original assignment prompt - kept locally for reference, not published.
+New File.md
