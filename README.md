@@ -63,14 +63,29 @@ one has a one-sentence defense.
    post-hoc fuzzy matching or string cleanup needed. If you're asked "how do
    you stop the LLM from making up a department?", this is the answer.
 
-3. **Real conflict-checked booking, not just JSON reshaping.** `appointments`
-   has a `UNIQUE(department_id, date, time)` constraint. Booking the same
-   slot twice returns a distinct `slot_conflict` status instead of silently
-   overwriting or duplicating. *Why:* this is an intentional extension beyond
-   the spec's two-state contract (`ok` / `needs_clarification`) — a real
-   scheduler has to prevent double-booking, and doing it as a DB constraint
-   (not an application-level check) makes it race-safe under concurrent
-   requests.
+3. **Real conflict-checked booking that accounts for appointment duration, not
+   just exact-time dupes.** Every appointment is assumed to occupy a fixed
+   `APPOINTMENT_DURATION_MINUTES = 30` block (the spec doesn't define a
+   duration, so this is a documented assumption). A plain
+   `UNIQUE(department_id, date, time)` constraint only catches two bookings
+   at the *exact same minute* — it would happily let someone book 15:15 when
+   15:00–15:30 is already taken. Instead, `appointments` has a Postgres
+   **GiST EXCLUDE constraint**
+   (`alembic/versions/0003_prevent_overlapping_appointments.py`):
+   `EXCLUDE USING gist (department_id WITH =, tsrange(date+time, date+time+interval '30 minutes') WITH &&)`.
+   This is Postgres's native tool for "no two rows may have overlapping
+   ranges for the same key," enforced atomically on every `INSERT` — no
+   application-level overlap-checking code, no race condition between a
+   check and a write. Booking any overlapping time returns a distinct
+   `slot_conflict` status instead of silently double-booking. *Why extend
+   the spec's two-state contract:* a real scheduler has to prevent
+   double-booking, and range overlap (not just exact-time equality) is what
+   "double-booking" actually means once appointments have a duration.
+
+   One SQLAlchemy quirk worth knowing: this constraint isn't declared as a
+   `UniqueConstraint`/`ExcludeConstraint` on the `Appointment` model — the
+   model's docstring explains why (the migration is the only source of
+   truth, since this project never calls `Base.metadata.create_all()`).
 
 4. **Confidence numbers are honestly caveated, not dressed up.** OCR and
    entity-extraction confidence are self-reported by Gemini in the prompt —
@@ -214,12 +229,25 @@ curl -X POST http://localhost:8000/api/v1/schedule -F "text=Book dentist wheneve
 # result.status == "needs_clarification"
 ```
 
-Double-booking the same slot:
+Double-booking the exact same slot:
 
 ```bash
 curl -X POST http://localhost:8000/api/v1/schedule -F "text=Book dentist next Friday at 3pm"
 curl -X POST http://localhost:8000/api/v1/schedule -F "text=Book dentist next Friday at 3pm"
 # second call: result.status == "slot_conflict"
+```
+
+Booking a *different* but overlapping time (each appointment occupies a
+30-minute block, so 15:15 collides with an existing 15:00 booking even
+though the times aren't identical):
+
+```bash
+curl -X POST http://localhost:8000/api/v1/schedule -F "text=Book dentist next Friday at 3pm"
+curl -X POST http://localhost:8000/api/v1/schedule -F "text=Book dentist next Friday at 3:15pm"
+# second call: result.status == "slot_conflict"
+
+curl -X POST http://localhost:8000/api/v1/schedule -F "text=Book dentist next Friday at 4pm"
+# this one succeeds: result.status == "ok" (4:00-4:30 doesn't overlap 3:00-3:30)
 ```
 
 ### Individual pipeline steps
@@ -262,12 +290,16 @@ curl http://localhost:8000/api/v1/appointments
 | Department not in the canonical list (`"unclear"`) | `{"status": "needs_clarification", ...}` |
 | Entity confidence below threshold | `{"status": "needs_clarification", ...}` |
 | Date/time phrase unparsable | `{"status": "needs_clarification", ...}` |
-| Slot already booked | `{"status": "slot_conflict", ...}` (extension, see Design Decisions #3) |
+| Requested time overlaps an existing booking for that department | `{"status": "slot_conflict", ...}` (extension, see Design Decisions #3) |
 | Gemini API error/timeout | HTTP 502 with a plain error message |
 | Oversized/non-image upload | HTTP 413 / 400 |
 
 ## Known limitations
 
 - Self-reported LLM confidence is a heuristic (see Design Decisions #4).
+- Fixed 30-minute appointment duration for every department (see Design
+  Decisions #3) — a real system would need per-department or per-visit-type
+  durations, which would mean storing duration per row instead of baking a
+  single constant into the DB constraint.
 - Single resource per department; no per-doctor/room scheduling.
 - No auth/multi-tenancy — out of scope for this assignment.

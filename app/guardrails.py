@@ -27,5 +27,8 @@ def low_confidence(stage: str, confidence: float, threshold: float) -> Guardrail
 
 def slot_conflict(department: str, date: str, time: str) -> ConflictResponse:
     return ConflictResponse(
-        message=f"{department} already has an appointment booked at {date} {time}"
+        message=(
+            f"{department} already has an appointment that overlaps {date} {time} "
+            "(each appointment occupies a 30-minute block)"
+        )
     )

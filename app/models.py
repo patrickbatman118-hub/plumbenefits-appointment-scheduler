@@ -1,6 +1,6 @@
 from datetime import date, datetime, time
 
-from sqlalchemy import DateTime, ForeignKey, String, UniqueConstraint, func
+from sqlalchemy import DateTime, ForeignKey, String, func
 from sqlalchemy import Date as SA_Date
 from sqlalchemy import Time as SA_Time
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -19,10 +19,19 @@ class Department(Base):
 
 
 class Appointment(Base):
+    """No overlap constraint is declared here on purpose.
+
+    Two bookings for the same department must not have overlapping
+    [time, time + APPOINTMENT_DURATION_MINUTES) ranges - not just avoid an
+    exact-time match. That can't be expressed as a plain SQLAlchemy
+    UniqueConstraint, so it's enforced as a Postgres GiST EXCLUDE constraint
+    defined directly in alembic/versions/0003_prevent_overlapping_appointments.py.
+    This project manages its schema entirely through Alembic migrations
+    (nothing calls Base.metadata.create_all()), so that migration - not this
+    class - is the actual source of truth for the constraint.
+    """
+
     __tablename__ = "appointments"
-    __table_args__ = (
-        UniqueConstraint("department_id", "date", "time", name="uq_department_slot"),
-    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     department_id: Mapped[int] = mapped_column(ForeignKey("departments.id"), nullable=False)
