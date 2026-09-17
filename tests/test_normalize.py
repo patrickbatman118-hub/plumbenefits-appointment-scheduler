@@ -117,3 +117,20 @@ def test_sunday_is_rejected_as_closed():
     now = datetime(2026, 9, 17, 10, 0, tzinfo=KOLKATA)  # Thursday
     with pytest.raises(DateTimeRejected, match="closed"):
         normalize_datetime("this Sunday", "11am", now=now)
+
+
+def test_too_soon_is_rejected_even_though_it_is_technically_in_the_future():
+    # 30 minutes from now is "in the future" but not bookable - every real
+    # scheduling tool researched enforces some minimum notice (Calendly,
+    # Cal.com, Google Calendar all have this; Google's own floor is 1 hour).
+    now = datetime(2026, 9, 17, 10, 0, tzinfo=KOLKATA)  # Thursday
+    with pytest.raises(DateTimeRejected, match="notice"):
+        normalize_datetime("today", "10:30am", now=now)
+
+
+def test_far_future_beyond_booking_horizon_is_rejected():
+    # Guards against, e.g., a misread year from noisy OCR resolving to a
+    # date years out. Matches Google Calendar's own default 60-day window.
+    now = datetime(2026, 9, 17, 10, 0, tzinfo=KOLKATA)  # Thursday
+    with pytest.raises(DateTimeRejected, match="advance"):
+        normalize_datetime("2027-06-15", "3pm", now=now)

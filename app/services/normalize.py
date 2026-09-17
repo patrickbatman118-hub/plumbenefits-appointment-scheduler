@@ -14,7 +14,14 @@ from zoneinfo import ZoneInfo
 import dateparser
 
 from app.config import get_settings
-from app.constants import APPOINTMENT_DURATION_MINUTES, BUSINESS_END_HOUR, BUSINESS_START_HOUR, CLOSED_WEEKDAYS
+from app.constants import (
+    APPOINTMENT_DURATION_MINUTES,
+    BUSINESS_END_HOUR,
+    BUSINESS_START_HOUR,
+    CLOSED_WEEKDAYS,
+    MAX_BOOKING_HORIZON_DAYS,
+    MIN_BOOKING_NOTICE_MINUTES,
+)
 
 settings = get_settings()
 
@@ -89,6 +96,19 @@ def normalize_datetime(date_phrase: str, time_phrase: str, now: datetime | None 
     # rejected explicitly rather than trusted to dateparser's heuristics.
     if parsed <= reference:
         raise DateTimeRejected("That date/time has already passed")
+
+    # Every scheduling tool researched enforces some minimum lead time
+    # (Calendly "minimum scheduling notice", Cal.com "minimum notice",
+    # Google Calendar's own 1-hour floor) - nobody can book something
+    # starting in the next few minutes. See app/constants.py for citations.
+    if parsed < reference + timedelta(minutes=MIN_BOOKING_NOTICE_MINUTES):
+        raise DateTimeRejected(f"Appointments need at least {MIN_BOOKING_NOTICE_MINUTES} minutes' notice")
+
+    # Equally universal in the other direction (Google Calendar defaults to
+    # a 60-day booking window) - guards against, e.g., a misread year from
+    # noisy OCR resolving to some date years out.
+    if parsed > reference + timedelta(days=MAX_BOOKING_HORIZON_DAYS):
+        raise DateTimeRejected(f"Cannot book more than {MAX_BOOKING_HORIZON_DAYS} days in advance")
 
     # No clinic is open 24/7. Applied identically to every department - see
     # app/constants.py for why this is a global assumption, not per-department

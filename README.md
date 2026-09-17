@@ -63,29 +63,43 @@ one has a one-sentence defense.
    post-hoc fuzzy matching or string cleanup needed. If you're asked "how do
    you stop the LLM from making up a department?", this is the answer.
 
-3. **Real conflict-checked booking that accounts for appointment duration, not
-   just exact-time dupes.** Every appointment is assumed to occupy a fixed
-   `APPOINTMENT_DURATION_MINUTES = 30` block (the spec doesn't define a
-   duration, so this is a documented assumption). A plain
-   `UNIQUE(department_id, date, time)` constraint only catches two bookings
-   at the *exact same minute* — it would happily let someone book 15:15 when
-   15:00–15:30 is already taken. Instead, `appointments` has a Postgres
-   **GiST EXCLUDE constraint**
-   (`alembic/versions/0003_prevent_overlapping_appointments.py`):
-   `EXCLUDE USING gist (department_id WITH =, tsrange(date+time, date+time+interval '30 minutes') WITH &&)`.
-   This is Postgres's native tool for "no two rows may have overlapping
-   ranges for the same key," enforced atomically on every `INSERT` — no
-   application-level overlap-checking code, no race condition between a
-   check and a write. Booking any overlapping time returns a distinct
-   `slot_conflict` status instead of silently double-booking. *Why extend
-   the spec's two-state contract:* a real scheduler has to prevent
-   double-booking, and range overlap (not just exact-time equality) is what
-   "double-booking" actually means once appointments have a duration.
+3. **Real conflict-checked booking that accounts for appointment duration
+   *and* a transition buffer, not just exact-time dupes.** Every appointment
+   is assumed to occupy a fixed `APPOINTMENT_DURATION_MINUTES = 30` block
+   (the spec doesn't define a duration, so this is a documented assumption).
+   A plain `UNIQUE(department_id, date, time)` constraint only catches two
+   bookings at the *exact same minute* — it would happily let someone book
+   15:15 when 15:00–15:30 is already taken. Instead, `appointments` has a
+   Postgres **GiST EXCLUDE constraint**
+   (`alembic/versions/0003_prevent_overlapping_appointments.py`, extended by
+   `0004_add_appointment_buffer.py`):
+   `EXCLUDE USING gist (department_id WITH =, tsrange(date+time, date+time+interval '40 minutes') WITH &&)`
+   — 40 = 30 minutes of appointment + a 10-minute transition buffer before
+   the next one can start. The buffer isn't guessed: Calendly and Cal.com
+   both call this "buffer time," and clinic-scheduling guidance specifically
+   recommends a 10-15 minute gap between provider appointments
+   ([source](https://skiplino.com/blog/best-patient-scheduling-software-for-clinics-hospitals-2025-stop-double-bookings-for-good/)).
+   Widening only the *end* of each appointment's blocked range by the
+   buffer (not both ends) is what correctly enforces "at least N minutes
+   between this appointment's end and the next one's start" through a
+   single EXCLUDE constraint, without double-counting the gap from both
+   sides — worth being able to explain the arithmetic here, not just that
+   it works. This is Postgres's native tool for "no two rows may
+   have overlapping ranges for the same key," enforced atomically on every
+   `INSERT` — no application-level overlap-checking code, no race condition
+   between a check and a write. Booking any conflicting time returns a
+   distinct `slot_conflict` status instead of silently double-booking. *Why
+   extend the spec's two-state contract:* a real scheduler has to prevent
+   double-booking, and that means both duration overlap and transition time,
+   not just exact-time equality.
 
    One SQLAlchemy quirk worth knowing: this constraint isn't declared as a
    `UniqueConstraint`/`ExcludeConstraint` on the `Appointment` model — the
    model's docstring explains why (the migration is the only source of
    truth, since this project never calls `Base.metadata.create_all()`).
+   Also worth knowing: `0004` doesn't edit `0003` in place — once a
+   migration has run, you add a new one instead of rewriting history, the
+   same as you would with any other team's already-applied migration.
 
 4. **Business hours and closed days are enforced — a clinic is not open
    24/7.** This should have been in the design from the start, not added
@@ -103,7 +117,24 @@ one has a one-sentence defense.
    appointment duration can't silently drift out of sync between the two
    places that need to agree on it.
 
-5. **Confidence numbers are honestly caveated, not dressed up.** OCR and
+5. **Minimum booking notice and a maximum booking horizon — researched
+   against how real scheduling tools actually behave, not guessed.**
+   Calendly ("minimum scheduling notice", "date range"), Cal.com ("minimum
+   notice", "future booking limits"), and Google Calendar's own Appointment
+   Schedules feature (1-hour minimum notice floor, 60-day default booking
+   window) all enforce both a lower and upper bound on how far from "now" a
+   booking can be — not just "must be in the future." `app/constants.py`
+   sets `MIN_BOOKING_NOTICE_MINUTES = 60` and `MAX_BOOKING_HORIZON_DAYS = 60`,
+   matching Google Calendar's own defaults directly. Without the minimum,
+   "book dentist in 30 seconds" would pass the earlier "is this in the
+   future" check; without the maximum, a misread year from noisy OCR (e.g.
+   "2028" instead of "2026") would silently produce a booking years out
+   instead of getting flagged. Sources:
+   [Calendly availability settings](https://calendly.com/help/how-to-fine-tune-your-availability-settings),
+   [Cal.com time limits](https://cal.com/blog/mastering-event-level-time-limits-what-lies-beyond-buffer-times),
+   [Google Calendar Appointment Schedules](https://support.google.com/calendar/answer/10729749).
+
+6. **Confidence numbers are honestly caveated, not dressed up.** OCR and
    entity-extraction confidence are self-reported by Gemini in the prompt —
    they are **not calibrated probabilities**. This is stated here explicitly
    rather than presented as a real metric. A production version would
@@ -111,7 +142,7 @@ one has a one-sentence defense.
    traditional OCR engine's word-level confidences, or self-consistency
    across repeated calls).
 
-6. **A real `dateparser` bug, worked around and documented.** `dateparser`
+7. **A real `dateparser` bug, worked around and documented.** `dateparser`
    1.4.3 fails to parse `"next Friday"` or `"this Friday"` as a single phrase
    (it returns `None`), even though it parses `"Friday"` alone and
    `"next week"` alone just fine — found while writing the unit tests, not in
@@ -121,7 +152,7 @@ one has a one-sentence defense.
    resolution of "next Friday"'s inherent ambiguity (nearest Friday vs. one
    week out) since it always resolves to the closest future occurrence.
 
-7. **A real Postgres 18 image-layout change, worked around and documented.**
+8. **A real Postgres 18 image-layout change, worked around and documented.**
    The official `postgres:18` Docker image restructured how it stores data on
    disk (major-version-specific subdirectories, to support `pg_ctlcluster`
    -style upgrades) and now expects the volume mounted at
@@ -131,7 +162,7 @@ one has a one-sentence defense.
    `docker compose up` and reading the failure, not by reading changelogs
    first — `docker-compose.yml`'s volume mount reflects the fix.
 
-8. **A self-audit of the pipeline found five more real bugs, verified with
+9. **A self-audit of the pipeline found five more real bugs, verified with
    actual probes, not just reasoned about:**
    - `dateparser` accepted a fully-specified *past* date/time as-is (e.g.
      "2020-01-01 3pm", or "today" once that time of day had already passed)
@@ -175,7 +206,7 @@ one has a one-sentence defense.
      rendered. All dynamic content in `static/index.html` is now passed
      through an explicit `escapeHtml()` before insertion.
 
-9. **Known scope simplifications** (deliberate, for a 3-day assignment):
+10. **Known scope simplifications** (deliberate, for a 3-day assignment):
    - One resource per department (no multiple doctors/rooms/time-of-day
      capacity) — booking a slot occupies the whole department for that
      department+date+time.
@@ -304,12 +335,39 @@ curl -X POST http://localhost:8000/api/v1/schedule -F "text=Book dentist this Su
 # result.status == "needs_clarification", message mentions "closed"
 ```
 
+Too little notice (needs at least 60 minutes) — replace with a time that's
+genuinely under an hour from when you run this:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/schedule -F "text=Book dentist today at <a time <60 min from now>"
+# result.status == "needs_clarification", message mentions "notice"
+```
+
+Beyond the booking horizon (more than 60 days out):
+
+```bash
+curl -X POST http://localhost:8000/api/v1/schedule -F "text=Book dentist on 2028-01-01 at 3pm"
+# result.status == "needs_clarification", message mentions "advance"
+```
+
 Double-booking the exact same slot:
 
 ```bash
 curl -X POST http://localhost:8000/api/v1/schedule -F "text=Book dentist next Friday at 3pm"
 curl -X POST http://localhost:8000/api/v1/schedule -F "text=Book dentist next Friday at 3pm"
 # second call: result.status == "slot_conflict"
+```
+
+Booked inside another appointment's buffer (10 minutes after the 30-minute
+block ends, so 10:35 conflicts with a 10:00 booking even though 10:00-10:30
+itself is free):
+
+```bash
+curl -X POST http://localhost:8000/api/v1/schedule -F "text=Book dentist next Friday at 10am"
+curl -X POST http://localhost:8000/api/v1/schedule -F "text=Book dentist next Friday at 10:35am"
+# second call: result.status == "slot_conflict"
+curl -X POST http://localhost:8000/api/v1/schedule -F "text=Book dentist next Friday at 10:40am"
+# this one succeeds - exactly the 10-minute buffer past the first booking's end
 ```
 
 Booking a *different* but overlapping time (each appointment occupies a
@@ -365,17 +423,18 @@ curl http://localhost:8000/api/v1/appointments
 | Department not in the canonical list (`"unclear"`) | `{"status": "needs_clarification", ...}` |
 | Entity confidence below threshold | `{"status": "needs_clarification", ...}` |
 | Date/time phrase unparsable, blank, or a placeholder word (`null`/`none`/...) | `{"status": "needs_clarification", ...}` |
-| Resolved date/time is not in the future | `{"status": "needs_clarification", ...}` (see Design Decisions #8) |
+| Resolved date/time is not in the future | `{"status": "needs_clarification", ...}` (see Design Decisions #9) |
+| Less than 60 minutes' notice, or more than 60 days in advance | `{"status": "needs_clarification", ...}` (see Design Decisions #5) |
 | Requested time is outside business hours, or its 30-minute block runs past closing | `{"status": "needs_clarification", ...}` (see Design Decisions #4) |
 | Requested date falls on a closed weekday (Sunday) | `{"status": "needs_clarification", ...}` (see Design Decisions #4) |
-| Requested time overlaps an existing booking for that department | `{"status": "slot_conflict", ...}` (extension, see Design Decisions #3) |
-| Malformed `date`/`time` string posted directly to `/appointments` or `/normalize` | `422 Unprocessable Entity` (schema validation, see Design Decisions #8) |
+| Requested time overlaps an existing booking, including its 10-minute buffer | `{"status": "slot_conflict", ...}` (extension, see Design Decisions #3) |
+| Malformed `date`/`time` string posted directly to `/appointments` or `/normalize` | `422 Unprocessable Entity` (schema validation, see Design Decisions #9) |
 | Gemini API error/timeout | HTTP 502 with a plain error message |
 | Oversized/non-image upload | HTTP 413 / 400 |
 
 ## Known limitations
 
-- Self-reported LLM confidence is a heuristic (see Design Decisions #5).
+- Self-reported LLM confidence is a heuristic (see Design Decisions #6).
 - Fixed 30-minute appointment duration for every department (see Design
   Decisions #3) — a real system would need per-department or per-visit-type
   durations, which would mean storing duration per row instead of baking a
