@@ -1,0 +1,274 @@
+{
+  "info": {
+    "name": "AI-Powered Appointment Scheduler Assistant",
+    "description": "Import this collection, set base_url if not running on localhost:8000, and run requests top to bottom. See README.md for the full write-up of what each guardrail demonstrates.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "base_url", "value": "http://localhost:8000" }
+  ],
+  "item": [
+    {
+      "name": "Supporting endpoints",
+      "item": [
+        {
+          "name": "GET /departments",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/departments"
+          }
+        },
+        {
+          "name": "GET /appointments",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/appointments"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Composed pipeline (/schedule) - happy paths",
+      "item": [
+        {
+          "name": "Happy path - text",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/schedule",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "text", "value": "Book dentist next Friday at 3pm", "type": "text" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Happy path - image (OCR)",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/schedule",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "image", "type": "file", "src": [] }
+              ]
+            },
+            "description": "Attach a photo of a handwritten/typed appointment note in the 'image' field."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Composed pipeline (/schedule) - guardrails",
+      "item": [
+        {
+          "name": "Ambiguous department -> needs_clarification",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/schedule",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "text", "value": "Book someone next Friday at 3pm", "type": "text" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Ambiguous date/time -> needs_clarification",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/schedule",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "text", "value": "Book dentist whenever works", "type": "text" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Outside business hours -> needs_clarification",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/schedule",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "text", "value": "Book dentist tomorrow at 2am", "type": "text" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Closed day (Sunday) -> needs_clarification",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/schedule",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "text", "value": "Book dentist this Sunday at 11am", "type": "text" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Beyond booking horizon (>60 days) -> needs_clarification",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/schedule",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "text", "value": "Book dentist on 2028-01-01 at 3pm", "type": "text" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Slot conflict - book #1 (run this first)",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/schedule",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "text", "value": "Book dentist next Friday at 10am", "type": "text" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Slot conflict - book #2, inside the buffer -> slot_conflict",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/schedule",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "text", "value": "Book dentist next Friday at 10:35am", "type": "text" }
+              ]
+            },
+            "description": "Run the previous request first. 10:35 falls inside the 10:00-10:30(+10min buffer) block."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Idempotency-Key",
+      "item": [
+        {
+          "name": "First call with Idempotency-Key",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/schedule",
+            "header": [{ "key": "Idempotency-Key", "value": "demo-key-1" }],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "text", "value": "Book ENT next Wednesday at 9am", "type": "text" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Retry with SAME key + SAME body -> instant replay",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/schedule",
+            "header": [{ "key": "Idempotency-Key", "value": "demo-key-1" }],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "text", "value": "Book ENT next Wednesday at 9am", "type": "text" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Reuse SAME key + DIFFERENT body -> 422",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/schedule",
+            "header": [{ "key": "Idempotency-Key", "value": "demo-key-1" }],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "text", "value": "Book dermatology next Thursday at 2pm", "type": "text" }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Individual pipeline steps",
+      "item": [
+        {
+          "name": "Step 1: POST /ocr",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/ocr",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "text", "value": "Book dentist next Friday at 3pm", "type": "text" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Step 2: POST /entities",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/entities",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"raw_text\": \"Book dentist next Friday at 3pm\"}"
+            }
+          }
+        },
+        {
+          "name": "Step 3: POST /normalize",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/normalize",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"entities\": {\"date_phrase\": \"next Friday\", \"time_phrase\": \"3pm\", \"department\": \"Dentistry\"}}"
+            }
+          }
+        },
+        {
+          "name": "Step 4: POST /appointments (valid date/time)",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/appointments",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"entities\": {\"date_phrase\": \"next Friday\", \"time_phrase\": \"3pm\", \"department\": \"Dentistry\"},\n  \"normalized\": {\"date\": \"2026-09-25\", \"time\": \"15:00\", \"tz\": \"Asia/Kolkata\"}\n}"
+            },
+            "description": "Update the 'date' field to an actual upcoming Friday before running - this endpoint doesn't re-derive it."
+          }
+        },
+        {
+          "name": "Step 4: POST /appointments - malformed date -> 422",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/appointments",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"entities\": {\"date_phrase\": \"x\", \"time_phrase\": \"y\", \"department\": \"Cardiology\"},\n  \"normalized\": {\"date\": \"not-a-date\", \"time\": \"15:00\", \"tz\": \"Asia/Kolkata\"}\n}"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
