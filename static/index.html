@@ -94,6 +94,12 @@
         return;
       }
 
+      // FormData already captured a snapshot of the current values above,
+      // so resetting the form now is safe - it clears the file input
+      // immediately instead of leaving a stale image selected that would
+      // silently override text typed into a later submission.
+      form.reset();
+
       output.innerHTML = '<p>Processing…</p>';
       try {
         const res = await fetch('/api/v1/schedule', { method: 'POST', body });
