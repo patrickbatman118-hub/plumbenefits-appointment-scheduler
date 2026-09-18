@@ -1,21 +1,16 @@
 """Thin wrapper over the google-genai SDK.
 
-Two calls only, both using Gemini's structured-output mode (response_schema)
-so the model is contractually forced to return schema-valid JSON instead of
-free text we'd have to parse and hope for the best:
+Two calls, both using Gemini's structured-output mode (response_schema) so
+the model is contractually forced to return schema-valid JSON:
 
 1. ocr_image        - image bytes -> {raw_text, confidence}
 2. extract_entities - raw text    -> {date_phrase, time_phrase, department, entities_confidence}
 
-For extract_entities, `department` is typed as a Literal built dynamically
-from the department names currently in the database (+ "unclear"). That
-makes it schema-impossible for the model to return a department that
-doesn't exist in our system - see services/entities.py and the README's
-"Design Decisions" section for the full rationale.
-
-Both calls are async and use `client.aio` (not the default `client`), and
-both retry transient errors with backoff - see the comments below on
-_call_with_retry for why both of those matter, not just how.
+`department` is a Literal built dynamically from the DB's department names
+(+ "unclear") so Gemini can't return one that doesn't exist - see README
+"Design Decisions" #2. Both calls use the async client and retry transient
+errors - see #6 for why (an event-loop-blocking bug and a live 503, not
+hypotheticals).
 """
 
 import asyncio
@@ -67,22 +62,10 @@ def _require_parsed(response):
 
 
 async def _call_with_retry(**generate_content_kwargs):
-    """Calls the async Gemini client with exponential backoff + jitter on
-    transient errors only. Deliberately not blind `except Exception: retry`
-    - retrying a permanent error (bad API key, malformed request) just
-    delays the same failure and burns quota for nothing.
-
-    Uses `client.aio.models.generate_content` (a real coroutine), not
-    `client.models.generate_content` (a blocking synchronous call). The
-    earlier version of this file called the sync client directly from an
-    `async def` FastAPI route - that blocks the entire single-process event
-    loop for the full round-trip of every Gemini call (often several
-    seconds), meaning the server couldn't handle *any* other request, not
-    even an unrelated GET, while one Gemini call was in flight. Confirmed by
-    inspecting the SDK directly: `inspect.iscoroutinefunction` is True for
-    `client.aio.models.generate_content` and False for
-    `client.models.generate_content`.
-    """
+    """`client.aio.models.generate_content` (a real coroutine) with backoff
+    retry on transient errors only - see README "Design Decisions" #6 for
+    why both of those matter (not just `client.models`, and not a blind
+    `except Exception: retry`)."""
     last_exc: Exception | None = None
     for attempt in range(_MAX_ATTEMPTS):
         try:

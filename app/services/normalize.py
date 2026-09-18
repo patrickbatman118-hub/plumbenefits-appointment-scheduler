@@ -67,12 +67,9 @@ def normalize_datetime(date_phrase: str, time_phrase: str, now: datetime | None 
     tz = ZoneInfo(settings.app_timezone)
     reference = now or datetime.now(tz)
 
-    # dateparser silently fills in gaps rather than failing: a date with no
-    # time defaults to midnight (00:00), and a bare time phrase with no date
-    # context just fails outright (inconsistent, and either way not what we
-    # want). Both directions are validated up front here instead of letting
-    # a partial phrase produce a confident-looking but made-up result -
-    # confirmed empirically, not assumed, while auditing this function.
+    # dateparser fills gaps instead of failing: a date with no time defaults
+    # to midnight rather than erroring. Reject blank phrases explicitly
+    # instead of letting a partial input produce a made-up result.
     if _is_blank_phrase(date_phrase) or _is_blank_phrase(time_phrase):
         raise DateTimeRejected("No date or time was mentioned in the request")
 
@@ -88,12 +85,9 @@ def normalize_datetime(date_phrase: str, time_phrase: str, now: datetime | None 
     if parsed is None:
         raise DateTimeRejected(f"Could not understand the date/time phrase \"{combined}\"")
 
-    # PREFER_DATES_FROM="future" only disambiguates incomplete/relative
-    # phrases (e.g. a bare weekday name) - it does NOT push a fully-specified
-    # date/time forward. "2020-01-01 3pm", or "today" when it's already past
-    # 3pm, both parse successfully as literal past timestamps. An appointment
-    # scheduler booking something in the past is always wrong, so that's
-    # rejected explicitly rather than trusted to dateparser's heuristics.
+    # PREFER_DATES_FROM="future" only disambiguates relative phrases (e.g. a
+    # bare weekday) - a fully-specified past date/time parses as-is and must
+    # be rejected explicitly.
     if parsed <= reference:
         raise DateTimeRejected("That date/time has already passed")
 

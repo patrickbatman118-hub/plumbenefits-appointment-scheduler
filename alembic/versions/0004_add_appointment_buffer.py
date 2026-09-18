@@ -19,15 +19,12 @@ _BLOCKED_MINUTES = APPOINTMENT_DURATION_MINUTES + APPOINTMENT_BUFFER_MINUTES
 
 
 def upgrade() -> None:
-    # 0003 prevented literal overlap (back-to-back bookings with zero gap
-    # were allowed). Real scheduling tools require actual transition time
-    # between bookings for the same resource (Calendly/Cal.com "buffer
-    # time"; clinic-scheduling guidance recommends 10-15 minutes) - see
-    # app/constants.py for citations. Widening only the END of each
-    # appointment's blocked range by the buffer (not both ends) is what
-    # correctly enforces "at least N minutes between this appointment's end
-    # and the next one's start" via a single EXCLUDE constraint, without
-    # double-counting the gap from both sides.
+    # 0003 prevented literal overlap but allowed zero-gap back-to-back
+    # bookings. Real scheduling tools require transition time (see
+    # app/constants.py for citations). Widening only the END of the blocked
+    # range by the buffer - not both ends - is what correctly enforces
+    # "at least N minutes between this appointment's end and the next one's
+    # start" without double-counting the gap.
     op.execute("ALTER TABLE appointments DROP CONSTRAINT IF EXISTS no_overlapping_department_slots")
     op.execute(
         f"""

@@ -25,24 +25,18 @@ researched actually does, cited so they're defensible rather than guessed:
 
 APPOINTMENT_DURATION_MINUTES = 30
 
-# Gap enforced between the end of one appointment and the start of the next
-# for the same department - real systems don't just prevent literal overlap,
-# they require transition time (see Calendly/Cal.com "buffer time" and the
-# clinic-scheduling guidance cited above).
+# Minimum gap between one appointment's end and the next one's start for
+# the same department - transition time, not just zero-overlap.
 APPOINTMENT_BUFFER_MINUTES = 10
 
-# Can't book something starting in the next few minutes - matches Google
-# Calendar's own 1-hour minimum-notice floor.
+# Can't book something starting in the next few minutes.
 MIN_BOOKING_NOTICE_MINUTES = 60
 
-# Can't book arbitrarily far in the future (guards against, e.g., a
-# misread year from noisy OCR) - matches Google Calendar's default 60-day
-# booking window.
+# Can't book arbitrarily far out (guards against e.g. a misread year from
+# noisy OCR).
 MAX_BOOKING_HORIZON_DAYS = 60
 
-# Applied identically to every department (documented simplification - see
-# README "Known scope simplifications"; a real system would likely need
-# per-department hours).
+# Global, not per-department (see README "Known scope simplifications").
 BUSINESS_START_HOUR = 9
 BUSINESS_END_HOUR = 18
 

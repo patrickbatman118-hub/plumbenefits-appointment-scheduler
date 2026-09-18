@@ -30,15 +30,10 @@ class Normalized(BaseModel):
     time: str
     tz: str
 
-    # These reach book_appointment's date.fromisoformat()/time.fromisoformat()
-    # calls unvalidated otherwise. Without this, POSTing a malformed value
-    # directly to /appointments or /normalize (the individual endpoints are
-    # meant to be independently callable, per the assignment's own curl/
-    # Postman requirement) raises a bare ValueError deep in scheduler.py that
-    # the router's `except ValueError` then mislabels as "ambiguous
-    # department" - a confusing, wrong guardrail for what's actually a
-    # malformed-date problem. Validating here turns it into a proper 422
-    # instead.
+    # Without this, a malformed value POSTed directly to /appointments or
+    # /normalize reaches date.fromisoformat() deep in scheduler.py, whose
+    # bare ValueError the router mislabels as "ambiguous department" -
+    # validating here turns it into a proper 422 instead.
     @field_validator("date")
     @classmethod
     def _validate_date(cls, v: str) -> str:
@@ -102,13 +97,9 @@ ScheduleResult = Annotated[
     Field(discriminator="status"),
 ]
 
-# EntitiesResult/NormalizedResult have no "status" field to discriminate on
-# (matching the spec's own JSON contract for those steps), so these are
-# plain unions rather than discriminated ones - Pydantic still resolves them
-# unambiguously since each member's required fields are disjoint. Used as
-# response_model on /entities and /normalize so the OpenAPI schema actually
-# reflects that either shape can come back, instead of documenting only the
-# success case.
+# No "status" field to discriminate on (matches the spec's JSON contract for
+# these steps), so plain unions - Pydantic still resolves them unambiguously
+# since each member's required fields are disjoint.
 EntitiesStepResult = Union[EntitiesResult, GuardrailResponse]
 NormalizedStepResult = Union[NormalizedResult, GuardrailResponse]
 

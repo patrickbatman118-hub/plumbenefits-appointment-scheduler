@@ -22,12 +22,10 @@ def upgrade() -> None:
     op.execute("CREATE EXTENSION IF NOT EXISTS btree_gist")
 
     # The old exact-match UNIQUE(department_id, date, time) only caught two
-    # bookings at literally the same minute. A real appointment occupies a
-    # block of time, so booking 15:15 when 15:00-15:30 is already taken must
-    # also be rejected. An EXCLUDE constraint is Postgres's native tool for
-    # "no two rows may have overlapping ranges for the same key" - enforced
-    # atomically by the database itself on every INSERT, so it's race-safe
-    # under concurrent requests with no application-level locking needed.
+    # bookings at the same minute, not 15:15 overlapping an existing
+    # 15:00-15:30 slot. EXCLUDE is Postgres's native "no two rows may have
+    # overlapping ranges for the same key" - atomic on every INSERT, no
+    # application-level locking needed.
     op.execute("ALTER TABLE appointments DROP CONSTRAINT IF EXISTS uq_department_slot")
     op.execute(
         f"""

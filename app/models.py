@@ -20,19 +20,14 @@ class Department(Base):
 
 
 class Appointment(Base):
-    """No overlap constraint is declared here on purpose.
-
-    Two bookings for the same department must not have overlapping
-    [time, time + APPOINTMENT_DURATION_MINUTES + APPOINTMENT_BUFFER_MINUTES)
-    ranges - not just avoid an exact-time match. That can't be expressed as
-    a plain SQLAlchemy UniqueConstraint, so it's enforced as a Postgres GiST
-    EXCLUDE constraint defined directly in
+    """No overlap constraint declared here on purpose: two bookings for the
+    same department can't have overlapping [time, time+duration+buffer)
+    ranges, which a plain SQLAlchemy UniqueConstraint can't express. It's a
+    Postgres GiST EXCLUDE constraint instead, defined directly in
     alembic/versions/0003_prevent_overlapping_appointments.py (extended by
-    0004_add_appointment_buffer.py). This project manages its schema
-    entirely through Alembic migrations (nothing calls
-    Base.metadata.create_all()), so those migrations - not this class - are
-    the actual source of truth for the constraint.
-    """
+    0004_add_appointment_buffer.py) - those migrations, not this class, are
+    the source of truth (this project never calls
+    Base.metadata.create_all())."""
 
     __tablename__ = "appointments"
 
@@ -59,10 +54,8 @@ class IdempotencyKey(Base):
 
     key: Mapped[str] = mapped_column(String(255), primary_key=True)
     request_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
-    # Always 200 currently - only a completed pipeline run ever gets cached
-    # (see idempotency.py), and /schedule always returns 200 for those.
-    # Stored anyway, matching what Stripe itself caches, in case a future
-    # idempotent endpoint needs to replay a different status code.
+    # Always 200 today (only completed /schedule runs get cached); stored
+    # anyway in case a future idempotent endpoint needs another status.
     response_status: Mapped[int] = mapped_column(Integer, nullable=False)
     response_body: Mapped[dict] = mapped_column(JSONB, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

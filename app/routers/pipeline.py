@@ -110,12 +110,8 @@ async def schedule_endpoint(
     db: AsyncSession = Depends(get_db),
     idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
 ) -> ScheduleResponse:
-    """Idempotency-Key is optional and fully backward compatible - omit it
-    and behavior is unchanged. Provide it and a retried request with the
-    same key replays the original result instead of re-running the Gemini
-    pipeline and potentially double-booking - see
-    app/services/idempotency.py for why this matters specifically for an
-    endpoint like this one."""
+    """Idempotency-Key is optional and backward compatible - see
+    app/services/idempotency.py for what it does and why."""
     req_fingerprint = None
     if idempotency_key:
         image_bytes = await image.read() if image is not None else None
